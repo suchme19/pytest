@@ -1,0 +1,67 @@
+name: train
+kind: TrainJob
+options:
+  cpu: 2
+  memory: 4
+  workDir: /workspace
+  trainData: SELECT getObject(url, 'conn1'), label FROM default.t_mnist WHERE train = 1 LIMIT 6000
+  testData: SELECT getObject(url, 'conn1'), label FROM default.t_mnist WHERE train = 0 LIMIT 1000
+params:
+  epochs: 10
+  dbUrl: http://clickhouse-object-url-enh.object-url-enh:8123
+  dbUser: admin
+  dbPass: MOmxEz3nCxjgWA
+  modelFile: mnist.pt
+  modelName: mnist
+  version: "1.0"
+container:
+  name: pytorch
+  image: 600701873821.dkr.ecr.ap-southeast-1.amazonaws.com/mqdb/pytorch-mnist:0.5
+  commands:
+    - cd {{options.workDir}}/pytorch-mnist
+    - >- 
+        python train.py --epochs {{params.epochs}} --save-artifact --archive 
+        --train-data "{{options.trainData}}" --test-data "{{options.testData}}" 
+        --db-url {{params.dbUrl}} --db-user {{params.dbUser}} --db-pass {{params.dbPass}}
+---
+name: serve
+kind: InferenceService
+options:
+  modelName: mnist
+  modelFormat: pytorch
+  modelVersion: "1.0"
+  modelStorage: s3://mqdb-result/dev/mnist
+  minReplicas: 1
+  maxReplicas: 100
+---
+name: infer
+kind: Job
+options:
+  workDir: /workspace
+params:
+  dbUrl: http://clickhouse-object-url-enh.object-url-enh:8123
+  dbUser: admin
+  dbPass: MOmxEz3nCxjgWA
+  selectSql: SELECT id, getObject(url, 'conn1'), label FROM t_mnist WHERE train = 0 LIMIT 1000
+  createSql: CREATE TABLE default.t_mnist_res (id String, lable UInt8, predict UInt8) ENGINE = Memory
+  insertSql: INSERT INTO default.t_mnist_res VALUES
+  inferUrl: http://torchserve.ai-core.svc.cluster.local/v1/models/mnist:predict
+  fetchBatch: 128
+  inferBatch: 32
+container:
+  name: infer
+  image: 600701873821.dkr.ecr.ap-southeast-1.amazonaws.com/mqdb/pytorch-mnist:0.5
+  commands:
+    - cd {{options.workDir}}/pytorch-mnist
+    - >-
+      python inference.py --db-url "{{params.dbUrl}}" --db-user {{params.dbUser}} --db-pass {{params.dbPass}} 
+      --select-sql "{{params.selectSql}}" --create-sql "{{params.createSql}}" --insert-sql "{{params.insertSql}}" 
+      --infer-url "{{params.inferUrl}}" --fetch-batch {{params.fetchBatch}} --infer-batch {{params.inferBatch}}
+---
+name: function
+kind: FunctionService
+options:
+  funcFile: funcs.py
+  image: 600701873821.dkr.ecr.ap-southeast-1.amazonaws.com/mqdb/function:0.1.4
+  minReplicas: 1
+  maxReplicas: 10
